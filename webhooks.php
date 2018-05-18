@@ -1,77 +1,101 @@
 <?php
- 
-$strAccessToken = "yx2RLbuSr395YaXKY78anUrJOXFLQQa9sw2m5lYF9ulOQwVA6ck3aJ9ft7C9a0txWMTFXu06RYhLrrlmm2HXiiWnBC2CPe99tRX3VyQ4IlX4jJDOb5F+etuBb2sCcXlAoakB76v/nV45uwRQN+0Y+gdB04t89/1O/w1cDnyilFU=
-";
- 
-$content = file_get_contents('php://input');
-$arrJson = json_decode($content, true);
- 
-$strUrl = "https://api.line.me/v2/bot/message/reply";
- 
-$arrHeader = array();
-$arrHeader[] = "Content-Type: application/json";
-$arrHeader[] = "Authorization: Bearer {$strAccessToken}";
-$_msg = $arrJson['events'][0]['message']['text'];
- 
- 
-$api_key="3HdA31m6pCe5DJzaYTkQC6OcFegyiwST";
-$url = 'https://api.mlab.com/api/1/databases/duckduck/collections/linebot?apiKey='.$api_key.'';
-$json = file_get_contents('https://api.mlab.com/api/1/databases/duckduck/collections/linebot?apiKey='.$api_key.'&q={"question":"'.$_msg.'"}');
-$data = json_decode($json);
-$isData=sizeof($data);
- 
-if (strpos($_msg, 'สอนบอทเปา') !== false) {
-  if (strpos($_msg, 'สอนบอทเปา') !== false) {
-    $x_tra = str_replace("สอนบอทเปา","", $_msg);
-    $pieces = explode("|", $x_tra);
-    $_question=str_replace("[","",$pieces[0]);
-    $_answer=str_replace("]","",$pieces[1]);
-    //Post New Data
-    $newData = json_encode(
-      array(
-        'question' => $_question,
-        'answer'=> $_answer
-      )
-    );
-    $opts = array(
-      'http' => array(
-          'method' => "POST",
-          'header' => "Content-type: application/json",
-          'content' => $newData
-       )
-    );
-    $context = stream_context_create($opts);
-    $returnValue = file_get_contents($url,false,$context);
-    $arrPostData = array();
-    $arrPostData['replyToken'] = $arrJson['events'][0]['replyToken'];
-    $arrPostData['messages'][0]['type'] = "text";
-    $arrPostData['messages'][0]['text'] = 'ขอบคุณที่สอนบอทเปา';
-  }
-}else{
-  if($isData >0){
-   foreach($data as $rec){
-    $arrPostData = array();
-    $arrPostData['replyToken'] = $arrJson['events'][0]['replyToken'];
-    $arrPostData['messages'][0]['type'] = "text";
-    $arrPostData['messages'][0]['text'] = $rec->answer;
-   }
-  }else{
-    $arrPostData = array();
-    $arrPostData['replyToken'] = $arrJson['events'][0]['replyToken'];
-    $arrPostData['messages'][0]['type'] = "text";
-    $arrPostData['messages'][0]['text'] = 'จ้าาา คุณสามารถสอนให้ฉลาดได้เพียงพิมพ์: สอนสอนบอทเปา[คำถาม|คำตอบ]';
-  }
+
+/**
+ * Copyright 2016 LINE Corporation
+ *
+ * LINE Corporation licenses this file to you under the Apache License,
+ * version 2.0 (the "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at:
+ *
+ *   https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
+namespace LINE\LINEBot\KitchenSink\EventHandler\MessageHandler;
+
+use LINE\LINEBot;
+use LINE\LINEBot\Event\MessageEvent\TextMessage;
+use LINE\LINEBot\KitchenSink\EventHandler;
+
+use Predis\Client;
+
+class TextMessageHandler implements EventHandler
+{
+    /** @var LINEBot $bot */
+    private $bot;
+    /** @var \Monolog\Logger $logger */
+    private $logger;
+    /** @var \Slim\Http\Request $logger */
+    private $req;
+    /** @var TextMessage $textMessage */
+    private $textMessage;
+
+    private $redis;
+
+    /**
+     * TextMessageHandler constructor.
+     * @param $bot
+     * @param $logger
+     * @param \Slim\Http\Request $req
+     * @param TextMessage $textMessage
+     */
+    public function __construct($bot, $logger, \Slim\Http\Request $req, TextMessage $textMessage)
+    {
+        $this->bot = $bot;
+        $this->logger = $logger;
+        $this->req = $req;
+        $this->textMessage = $textMessage;
+        $this->redis = new Client(getenv('REDIS_URL'));
+    }
+
+    public function handle()
+    {
+        $TEACH_SIGN = '==';
+        $text = $this->textMessage->getText();
+        $text = trim($text);
+        # Remove ZWSP
+        $text = str_replace("\xE2\x80\x8B", "", $text);
+        $replyToken = $this->textMessage->getReplyToken();
+
+        if ($text == 'บอท') {
+            $this->bot->replyText($replyToken, $out =
+                "ใช้ $TEACH_SIGN เพื่อสอนเราได้นะ\nเช่น สวัสดี" . $TEACH_SIGN . "สวัสดีชาวโลก");
+            return true;
+        }
+
+        $sep_pos = strpos($text, $TEACH_SIGN);
+        if ($sep_pos > 0) {
+            $text_arr = explode($TEACH_SIGN, $text, 2);
+            if (count($text_arr) == 2) {
+                $this->saveResponse($text_arr[0], $text_arr[1]);
+            }
+            return true;
+        }
+
+        $re = $this->getResponse($text);
+        $re_count = count($re);
+        if ($re_count > 0) {
+            // Random response.
+            $randNum = rand(0, $re_count - 1);
+            $response = $re[$randNum];
+            $this->bot->replyText($replyToken, $response);
+            return true;
+        }
+        return false;
+    }
+
+    private function saveResponse($keyword, $response)
+    {
+        $this->redis->lpush("response:$keyword", $response);
+    }
+
+    private function getResponse($keyword)
+    {
+        return $this->redis->lrange("response:$keyword", 0, -1);
+    }
 }
- 
- 
-$channel = curl_init();
-curl_setopt($channel, CURLOPT_URL,$strUrl);
-curl_setopt($channel, CURLOPT_HEADER, false);
-curl_setopt($channel, CURLOPT_POST, true);
-curl_setopt($channel, CURLOPT_HTTPHEADER, $arrHeader);
-curl_setopt($channel, CURLOPT_POSTFIELDS, json_encode($arrPostData));
-curl_setopt($channel, CURLOPT_RETURNTRANSFER,true);
-curl_setopt($channel, CURLOPT_SSL_VERIFYPEER, false);
-$result = curl_exec($channel);
-curl_close ($channel);
-?>
